@@ -1,0 +1,63 @@
+[project]
+name = "groundwork"
+version = "0.1.0"
+description = "An agent that refuses to make up numbers, trustworthy by construction (quantum resource estimation)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+  # agent loop + typed spine
+  "langgraph>=0.2",
+  "langchain-ollama>=0.2",   
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",     # reads .env into typed Settings (your config.py)
+  # grounded computation
+  "pint>=0.24",                 # units / dimensional analysis
+  "uncertainties>=3.2",         # error propagation
+  "sympy>=1.13",                # symbolic derivations
+  "numpy>=1.26",
+  "scipy>=1.13",                # scipy.constants = sourced constants
+  # sandboxed code execution
+  "e2b-code-interpreter>=1.0",
+  # quantum domain: Azure Quantum Resource Estimator (runs locally)
+  "qsharp>=1.0",
+  # service
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  # observability
+  "langfuse>=3.0",              # OTel-native; swap for weave if you prefer W&B
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "inspect-ai>=0.3",            # evals — Phase 4 onward
+]
+crossverify = [
+  "qualtran>=0.4",             # 2nd estimator for the cross-method check — add at Phase 5
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["groundwork"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]   # pycodestyle, pyflakes, isort, pyupgrade, bugbear
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
