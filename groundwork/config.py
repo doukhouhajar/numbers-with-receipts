@@ -16,9 +16,9 @@ class Settings(BaseSettings):
     llm_provider: Literal["ollama", "openai-compatible"] = "ollama"
     groundwork_model: str = "qwen3:8b"
     ollama_base_url: str = "http://localhost:11434"
-    openai_base_url: str | None = None          # http://localhost:8000/v1 for vLLM
+    openai_base_url: str | None = None  # http://localhost:8000/v1 for vLLM
     openai_api_key: str | None = None
-    temperature: float = 0.0                    # grounded reasoning wants determinism
+    temperature: float = 0.0 # we want determinism
 
     # Sandbox 
     e2b_api_key: str | None = None
@@ -54,7 +54,7 @@ def get_model(settings: Settings | None = None):
         return ChatOpenAI(
             model=s.groundwork_model,
             base_url=s.openai_base_url,
-            api_key=s.openai_api_key or "local",   # placeholder for keyless local servers
+            api_key=s.openai_api_key or "local", # for keyless local servers
             temperature=s.temperature,
         )
     raise ValueError(f"Unknown LLM_PROVIDER: {s.llm_provider!r}")
@@ -68,8 +68,6 @@ def get_langfuse_handler(settings: Settings | None = None):
     from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler
 
-    # v3: initialise the client once. pydantic-settings reads .env into Settings
-    # but does NOT export to os.environ, so we pass the keys explicitly.
     Langfuse(
         public_key=s.langfuse_public_key,
         secret_key=s.langfuse_secret_key,
