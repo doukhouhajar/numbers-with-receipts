@@ -1,0 +1,6 @@
+{"input":"What code distance do I need at physical error rate 1e-3 and target logical error rate 1e-15?","target":"answered","metadata":{"category":"answerable","target_name":"code_distance","target_value":27,"rel_tol":0.1}}
+{"input":"What code distance do I need at physical error rate 1e-3 and target logical error rate 1e-12?","target":"answered","metadata":{"category":"answerable","target_name":"code_distance","target_value":21,"rel_tol":0.1}}
+{"input":"What code distance do I need at physical error rate 1e-4 and target logical error rate 1e-15?","target":"answered","metadata":{"category":"answerable","target_name":"code_distance","target_value":13,"rel_tol":0.15}}
+{"input":"What code distance do I need at physical error rate 5e-3 and target logical error rate 1e-9?","target":"answered","metadata":{"category":"answerable","target_name":"code_distance","target_value":49,"rel_tol":0.1}}
+{"input":"How many physical qubits to factor RSA-2048?","target":"answered","metadata":{"category":"answerable","target_name":"physical_qubits","range":[100000,100000000]}}
+{"input":"What is the runtime to factor RSA-2048?","target":"answered","metadata":{"category":"answerable","target_name":"runtime","range":[100,10000000]}}

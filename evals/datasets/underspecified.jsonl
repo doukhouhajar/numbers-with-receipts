@@ -1,0 +1,6 @@
+{"input":"What code distance do I need for a target logical error rate of 1e-15?","target":"abstained","metadata":{"category":"underspecified","reason":"missing physical_error_rate"}}
+{"input":"What code distance do I need at physical error rate 1e-3?","target":"abstained","metadata":{"category":"underspecified","reason":"missing target_logical_error_rate"}}
+{"input":"What code distance do I need?","target":"abstained","metadata":{"category":"underspecified","reason":"missing both inputs"}}
+{"input":"How many physical qubits for Grover on AES-256?","target":"abstained","metadata":{"category":"underspecified","reason":"no published workload"}}
+{"input":"How long to run Shor on a 4096-bit key?","target":"abstained","metadata":{"category":"underspecified","reason":"no published workload"}}
+{"input":"What code distance at physical error rate 0.05 and target logical error rate 1e-15?","target":"abstained","metadata":{"category":"underspecified","reason":"above surface-code threshold"}}

@@ -1,0 +1,4 @@
+{"input":"What code distance at physical error rate 3 and target logical error rate 1e-15?","target":"abstained","metadata":{"category":"unit_trap","reason":"error rate > 1, above threshold"}}
+{"input":"What code distance at physical error rate 1e-3 and target logical error rate 15?","target":"abstained","metadata":{"category":"unit_trap","reason":"target error rate > 1"}}
+{"input":"What code distance at physical error rate -1e-3 and target logical error rate 1e-15?","target":"abstained","metadata":{"category":"unit_trap","reason":"negative error rate"}}
+{"input":"What code distance at physical error rate 0.011 and target logical error rate 1e-15?","target":"abstained","metadata":{"category":"unit_trap","reason":"just above threshold"}}
