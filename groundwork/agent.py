@@ -41,37 +41,49 @@ class AgentState(TypedDict, total=False):
     attempts: int
     answer: Answer
     workload: str | None
+    leaf_kinds: dict[str, str]
 
-RECIPES: dict[str, tuple[str, list[str]]] = {
-    "physical_qubits": ("estimator", ["logical_qubits", "t_count"]),
-    "runtime": ("estimator", ["logical_qubits", "t_count"]),
-    "code_distance": ("required_code_distance", ["physical_error_rate", "target_logical_error_rate"]),
-    "logical_error_rate": ("logical_error_rate", ["physical_error_rate", "code_distance"]),
+LeafKind = Literal["user_input", "workload", "constant"]
+
+# target -> (method, {input_name: how_to_ground_it})
+RECIPES: dict[str, tuple[str, dict[str, "LeafKind"]]] = {
+    "physical_qubits": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
+    "runtime": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
+    "code_distance": ("required_code_distance", {
+        "physical_error_rate": "user_input",
+        "target_logical_error_rate": "user_input",
+    }),
+    "logical_error_rate": ("logical_error_rate", {
+        "physical_error_rate": "user_input",
+        "code_distance": "user_input",
+    }),
 }
-
 # nodes
+import re
+
 def parse(state: AgentState) -> dict[str, Any]:
     q = state["question"].lower()
+    givens: dict[str, float] = {}
+
+    # replace with structured LLM output later
+    if m := re.search(r"physical error rate\s*(?:of\s*)?([\d.eE+-]+)", q):
+        givens["physical_error_rate"] = float(m.group(1))
+    if m := re.search(r"logical error rate\s*(?:of\s*)?([\d.eE+-]+)", q):
+        givens["target_logical_error_rate"] = float(m.group(1))
 
     if "code distance" in q or "distance" in q:
         target, unit = "code_distance", ""
-        givens = {"physical_error_rate": 1e-3, "target_logical_error_rate": 1e-15}
-    elif "runtime" in q or "how long" in q or "time" in q:
+    elif "runtime" in q or "how long" in q:
         target, unit = "runtime", "s"
-        givens = {}
     else:
         target, unit = "physical_qubits", ""
-        givens = {}
 
-    workload = "rsa2048_gidney2025" if "rsa" in q else None
-    log.info("parse: target=%s workload=%s", target, workload)
     return {
-        "target_name": target,
-        "target_unit": unit,
+        "target_name": target, "target_unit": unit,
         "target_dimension": dimension_of(unit) or "dimensionless",
         "givens": givens,
-        "workload": workload,
-        "steps": [f"Parsed target: {target} [{unit or 'dimensionless'}]"],
+        "workload": "rsa2048_gidney2025" if "rsa" in q else None,
+        "steps": [f"Parsed target: {target}, givens: {list(givens)}"],
         "attempts": 0,
     }
 
@@ -81,29 +93,24 @@ def plan(state: AgentState) -> dict[str, Any]:
     recipe = RECIPES.get(target)
     if recipe is None:
         return {
-            "quantities": {
-                target: Quantity(
-                    name=target,
-                    provenance=Unknown(reason=f"no recipe registered for {target!r}"),
-                )
-            },
+            "quantities": {target: Quantity(
+                name=target, provenance=Unknown(reason=f"no recipe registered for {target!r}"))},
             "steps": [f"No capability produces {target!r}"],
         }
 
-    method, required = recipe
+    method, leaf_kinds = recipe
     quantities: dict[str, Quantity] = {
         name: Quantity(name=name, provenance=Unknown(reason="pending grounding"))
-        for name in required
+        for name in leaf_kinds
     }
     quantities[target] = Quantity(
-        name=target,
-        unit=state["target_unit"],
-        dimension=state["target_dimension"],
+        name=target, unit=state["target_unit"], dimension=state["target_dimension"],
         provenance=Unknown(reason="pending computation"),
     )
     return {
         "quantities": quantities,
-        "steps": [f"Planned: {target} <- {method}({', '.join(required)})"],
+        "leaf_kinds": dict(leaf_kinds),
+        "steps": [f"Planned: {target} <- {method}({', '.join(leaf_kinds)})"],
         "assumptions": [
             Assumption(text="surface code QEC", impact="floquet code changes the footprint"),
             Assumption(text="gate-based ns qubits at 1e-3 error", impact="dominates physical qubit count"),
@@ -114,33 +121,43 @@ def plan(state: AgentState) -> dict[str, Any]:
 def ground(state: AgentState) -> dict[str, Any]:
     target = state["target_name"]
     givens = state.get("givens", {})
+    leaf_kinds = state.get("leaf_kinds", {})
     quantities = dict(state["quantities"])
     notes: list[str] = []
 
-    workload_counts = (
-        domain.workload_counts(state["workload"]) if state.get("workload") else {}
-    )
+    workload = state.get("workload")
+    workload_counts = domain.workload_counts(workload) if workload else {}
 
-    for name, q in quantities.items():
-        if name == target:
-            continue
+    for name, kind in leaf_kinds.items():
+        q = quantities[name]
+
         if name in givens:
             quantities[name] = Quantity(
                 name=name, value=givens[name], unit=q.unit,
-                dimension=q.dimension, provenance=UserGiven(),
-            )
+                dimension=q.dimension, provenance=UserGiven())
             notes.append(f"Grounded {name} from user input")
-        elif name in workload_counts:
-            quantities[name] = workload_counts[name]
-            notes.append(f"Grounded {name} from published workload counts")
-        else:
+            continue
+
+        if kind == "user_input":
+            quantities[name] = Quantity(name=name, provenance=Unknown(
+                reason=f"you did not specify {name.replace('_', ' ')} — please provide it"))
+            notes.append(f"Missing user input: {name}")
+
+        elif kind == "workload":
+            if name in workload_counts and workload_counts[name].is_grounded:
+                quantities[name] = workload_counts[name]
+                notes.append(f"Grounded {name} from published workload counts")
+            else:
+                quantities[name] = Quantity(name=name, provenance=Unknown(
+                    reason=f"no published workload counts for {name!r}"
+                           + (f" in {workload!r}" if workload else " (no known algorithm named)")))
+                notes.append(f"Could not ground {name} from workloads")
+
+        elif kind == "constant":
             found = lookup_constant(name)
             quantities[name] = found
-            notes.append(
-                f"Grounded {name} from constants table"
-                if found.is_grounded
-                else f"Could NOT ground {name}"
-            )
+            notes.append(f"Grounded {name} from constants" if found.is_grounded
+                         else f"No sourced constant for {name}")
 
     return {"quantities": quantities, "steps": notes}
 
@@ -224,12 +241,12 @@ def decide(state: AgentState) -> dict[str, Any]:
     failed = [name for name, ok in checks.items() if not ok]
 
     if derivation.ungrounded:
-        missing = ", ".join(q.name for q in derivation.ungrounded)
+        reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)
         answer = Answer(
             status="abstained",
             question=state["question"],
             derivation=derivation,
-            abstain_reason=f"Could not ground: {missing}. Supply these to proceed.",
+            abstain_reason=f"Cannot answer without: {reasons}",
         )
     elif failed:
         answer = Answer(

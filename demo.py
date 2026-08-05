@@ -13,8 +13,8 @@ BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
 GREEN, YELLOW, RED, CYAN = "\033[32m", "\033[33m", "\033[31m", "\033[36m"
 
 
-def rule(title: str = "") -> str:
-    return f"{DIM}{'─' * 4} {title} {'─' * max(0, 66 - len(title))}{RESET}"
+#def rule(title: str = "") -> str:
+#   return f"{DIM}{'─' * 4} {title} {'─' * max(0, 66 - len(title))}{RESET}"
 
 
 def receipt(q: Quantity) -> str:
@@ -39,10 +39,10 @@ def fmt_value(q: Quantity) -> str:
 
 
 def render(answer: Answer) -> str:
-    out: list[str] = ["", rule("QUESTION"), answer.question, ""]
+    out: list[str] = ["", "QUESTION", answer.question, ""]
 
     d = answer.derivation
-    out.append(rule("DERIVATION"))
+    out.append("DERIVATION")
     # dependencies before dependents
     ordered = sorted(
         d.quantities.values(),
@@ -53,14 +53,14 @@ def render(answer: Answer) -> str:
         out.append(f" {marker} {q.name:<24} {fmt_value(q):<28} {receipt(q)}")
 
     if d.steps:
-        out += ["", rule("STEPS")] + [f"   {i}. {s}" for i, s in enumerate(d.steps, 1)]
+        out += ["", "STEPS"] + [f"   {i}. {s}" for i, s in enumerate(d.steps, 1)]
 
     if d.assumptions:
-        out += ["", rule("ASSUMPTIONS")]
+        out += ["", "ASSUMPTIONS"]
         for a in d.assumptions:
             out.append(f"   • {a.text}{f' {DIM}({a.impact}){RESET}' if a.impact else ''}")
 
-    out += ["", rule("VERDICT")]
+    out += ["", "VERDICT"]
     if answer.status == "answered":
         assert answer.result is not None
         conf = f" {DIM}(confidence {answer.confidence:.0%}){RESET}" if answer.confidence else ""
