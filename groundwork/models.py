@@ -101,13 +101,19 @@ class Derivation(BaseModel):
     @property
     def ungrounded(self) -> list[Quantity]:
         return [q for q in self.quantities.values() if not q.is_grounded]
-
+    
+class Check(BaseModel):
+    name: str = Field(min_length=1)
+    status: Literal["pass", "fail", "na"]   # na = not applicable to this answer
+    blocking: bool = False                  # a failed blocking check forbids answering
+    detail: str = ""
 
 class Answer(BaseModel):
     status: Literal["answered", "abstained"]
     question: str = ""
     result: Quantity | None = None
     derivation: Derivation
+    checks: list[Check] = Field(default_factory=list)   # <-- new
     abstain_reason: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
 
@@ -121,13 +127,15 @@ class Answer(BaseModel):
             if self.derivation.ungrounded:
                 names = [q.name for q in self.derivation.ungrounded]
                 raise ValueError(f"answered while these remain ungrounded: {names}")
+            failed = [c.name for c in self.checks if c.blocking and c.status == "fail"]
+            if failed:                                    # <-- new
+                raise ValueError(f"answered despite failed blocking checks: {failed}")
         else:
             if not self.abstain_reason:
                 raise ValueError("abstained without a reason")
             if self.result is not None:
                 raise ValueError("abstained but a result was attached")
         return self
-    
 
 
 """

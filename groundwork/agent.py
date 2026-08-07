@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any, Literal, TypedDict
-
+from groundwork import verify as verify_mod
 from langgraph.graph import END, START, StateGraph
 from groundwork import domain
 from groundwork.tools import lookup_constant
@@ -16,6 +16,7 @@ from groundwork.models import (
     Quantity,
     Unknown,
     UserGiven,
+    Check,
 )
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class AgentState(TypedDict, total=False):
     answer: Answer
     workload: str | None
     leaf_kinds: dict[str, str]
+    checks: list[Check]
 
 LeafKind = Literal["user_input", "workload", "constant"]
 
@@ -219,15 +221,21 @@ def compute(state: AgentState) -> dict[str, Any]:
     }
 
 def verify(state: AgentState) -> dict[str, Any]:
+    target = state["target_name"]
+    quantities = state.get("quantities", {})
+    result = quantities.get(target)
+
+    checks: list[Check] = []
+    if result is not None and result.is_grounded:
+        checks.append(verify_mod.check_faithfulness(target, quantities, result))
+        # append dimensional,magnitude,cross-method,uncertainty here
+
     return {
-        "verification": {
-            "dimensional": True,
-            "magnitude": True,
-            "cross_method": True,
-            "faithfulness": True,
-        },
-        "verification_notes": ["STUB: all checks passed"],
+        "checks": checks,
+        "verification": {c.name: (c.status != "fail") for c in checks},   # keeps routing working
+        "verification_notes": [f"{c.name}: {c.status} — {c.detail}" for c in checks],
     }
+
 
 def decide(state: AgentState) -> dict[str, Any]:
     target = state["target_name"]
@@ -237,32 +245,21 @@ def decide(state: AgentState) -> dict[str, Any]:
         steps=state.get("steps", []),
         assumptions=state.get("assumptions", []),
     )
-    checks = state.get("verification", {})
-    failed = [name for name, ok in checks.items() if not ok]
+    checks = state.get("checks", [])
+    blocking_failed = [c for c in checks if c.blocking and c.status == "fail"]
 
     if derivation.ungrounded:
         reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)
-        answer = Answer(
-            status="abstained",
-            question=state["question"],
-            derivation=derivation,
-            abstain_reason=f"Cannot answer without: {reasons}",
-        )
-    elif failed:
-        answer = Answer(
-            status="abstained",
-            question=state["question"],
-            derivation=derivation,
-            abstain_reason=f"Verification failed: {', '.join(failed)}.",
-        )
+        answer = Answer(status="abstained", question=state["question"], derivation=derivation,
+                        checks=checks, abstain_reason=f"Cannot answer without: {reasons}")
+    elif blocking_failed:
+        why = "; ".join(f"{c.name}: {c.detail}" for c in blocking_failed)
+        answer = Answer(status="abstained", question=state["question"], derivation=derivation,
+                        checks=checks, abstain_reason=f"Verification failed — {why}")
     else:
-        answer = Answer(
-            status="answered",
-            question=state["question"],
-            result=derivation.quantities[target],
-            derivation=derivation,
-            confidence=0.8,
-        )
+        answer = Answer(status="answered", question=state["question"],
+                        result=derivation.quantities[target], derivation=derivation,
+                        checks=checks, confidence=0.8)
     return {"answer": answer}
 
 

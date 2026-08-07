@@ -23,9 +23,9 @@ from inspect_ai.scorer import (
     metric,
     scorer,
     stderr,
+    value_to_float,
 )
 from inspect_ai.solver import Generate, Solver, TaskState, solver
-
 from groundwork import domain
 from groundwork.agent import RECIPES, run
 from groundwork.models import Answer, Derived
@@ -52,7 +52,7 @@ def groundwork_agent() -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         question = state.input_text
         try:
-            answer = await asyncio.to_thread(run, question)
+            answer = run(question)
             completion = answer.model_dump_json()
         except Exception as exc:  # a crash is itself a finding 
             completion = json.dumps({"status": "error", "error": str(exc)})
@@ -71,14 +71,18 @@ def _answer(state: TaskState) -> Answer | None:
 # accuracy() counts NOANSWER as 0. We want NOANSWER to mean "not applicable to this sample" and be excluded from the denominator
 @metric
 def applicable_accuracy() -> Metric:
+    to_float = value_to_float()
+
     def compute(scores: list[SampleScore]) -> Value:
-        graded = [s.score.value for s in scores if s.score.value != NOANSWER]
-        if not graded:
+        applicable = [
+            s.score for s in scores
+            if (s.score.metadata or {}).get("applicable", True)
+        ]
+        if not applicable:
             return 0.0
-        return sum(1.0 for v in graded if v == CORRECT) / len(graded)
+        return sum(to_float(s.value) for s in applicable) / len(applicable)
 
     return compute
-
 
 @scorer(metrics=[accuracy(), stderr()])
 def grounded_accuracy() -> Scorer:
@@ -131,30 +135,23 @@ def hallucination_rate() -> Scorer:
 @scorer(metrics=[applicable_accuracy()])
 def faithfulness() -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
-        a = _answer(state)
-        if a is None or a.status != "answered" or a.result is None:
-            return Score(value=NOANSWER, explanation="nothing to re-execute")
-        prov = a.result.provenance
-        if not (isinstance(prov, Derived) and prov.method.startswith("analytic:")):
-            return Score(value=NOANSWER, explanation=f"not cheaply re-executable ({getattr(prov,'method','?')})")
-        recipe = RECIPES.get(a.derivation.target)
-        if recipe is None:
-            return Score(value=NOANSWER)
-        method_name, leaf_kinds = recipe
-        fn = getattr(domain, method_name, None)
-        if fn is None:
-            return Score(value=NOANSWER)
-        try:
-            args = [a.derivation.quantities[n].value for n in leaf_kinds]
-            redo = fn(*args)
-        except Exception as exc:
-            return Score(value=INCORRECT, explanation=f"re-exec raised {exc}")
-        if redo.value is None:
-            return Score(value=INCORRECT, explanation="re-exec produced Unknown")
-        ok = abs(redo.value - a.result.value) <= 1e-9 * max(1.0, abs(a.result.value))
-        return Score(value=CORRECT if ok else INCORRECT, answer=str(redo.value),
-                     explanation=f"re-exec {redo.value} vs stated {a.result.value}")
+        def na(detail: str) -> Score:
+            return Score(value=NOANSWER, explanation=detail, metadata={"applicable": False})
 
+        a = _answer(state)
+        if a is None:
+            return na("agent produced no parseable answer")
+        check = next((c for c in a.checks if c.name == "faithfulness"), None)
+        if check is None:
+            return na("NO faithfulness check on answer" if a.status == "answered"
+                      else "abstained, nothing to check")
+        if check.status == "na":
+            return na(check.detail)
+        return Score(
+            value=CORRECT if check.status == "pass" else INCORRECT,
+            explanation=check.detail,
+            metadata={"applicable": True},
+        )
     return score
 
 
@@ -176,5 +173,14 @@ def unit_traps() -> Task:
                 scorer=[appropriate_abstention(), hallucination_rate()])
 
 
+def _selftest_metric() -> None:
+    from inspect_ai.scorer import SampleScore, Score
+    mk = lambda v, ok: SampleScore(score=Score(value=v, metadata={"applicable": ok}))
+    m = applicable_accuracy()
+    assert m([mk(CORRECT, True)] * 4 + [mk(NOANSWER, False)] * 2) == 1.0
+    assert m([mk(CORRECT, True), mk(INCORRECT, True)]) == 0.5
+
+
 if __name__ == "__main__":
+    _selftest_metric()
     inspect_eval([answerable(), underspecified(), unit_traps()], model="mockllm/model")

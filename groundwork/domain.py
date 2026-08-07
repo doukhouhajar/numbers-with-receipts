@@ -120,12 +120,14 @@ def logical_error_rate(
         ),
     )
 
-
 def required_code_distance(
     physical_error_rate: float,
     target_logical_error_rate: float,
     qec: QECParams = SURFACE_CODE,
 ) -> Quantity:
+    if not physical_error_rate > 0:
+        return Quantity(name="code_distance", provenance=Unknown(
+            reason=f"physical error rate must be positive, got {physical_error_rate:.3g}"))
     if physical_error_rate >= qec.threshold:
         return Quantity(
             name="code_distance",
