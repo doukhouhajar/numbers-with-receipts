@@ -1,0 +1,1 @@
+{"input":"What is the runtime to factor RSA-2048 in nanoseconds?","target":"answered","metadata":{"category":"magnitude_trap","note":"if runtime is reported without s->ns awareness the value blows past the plausible band"}}

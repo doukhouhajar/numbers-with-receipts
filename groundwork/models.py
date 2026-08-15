@@ -104,9 +104,13 @@ class Derivation(BaseModel):
     
 class Check(BaseModel):
     name: str = Field(min_length=1)
-    status: Literal["pass", "fail", "na"]   # na = not applicable to this answer
-    blocking: bool = False                  # a failed blocking check forbids answering
+    status: Literal["pass", "fail", "na"]
+    severity: Literal["blocking", "advisory"] = "advisory"   
     detail: str = ""
+
+    @property
+    def blocks(self) -> bool:
+        return self.severity == "blocking" and self.status == "fail"
 
 class Answer(BaseModel):
     status: Literal["answered", "abstained"]
@@ -127,8 +131,8 @@ class Answer(BaseModel):
             if self.derivation.ungrounded:
                 names = [q.name for q in self.derivation.ungrounded]
                 raise ValueError(f"answered while these remain ungrounded: {names}")
-            failed = [c.name for c in self.checks if c.blocking and c.status == "fail"]
-            if failed:                                    # <-- new
+            failed = [c.name for c in self.checks if c.blocks]
+            if failed:
                 raise ValueError(f"answered despite failed blocking checks: {failed}")
         else:
             if not self.abstain_reason:

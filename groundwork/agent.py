@@ -228,7 +228,8 @@ def verify(state: AgentState) -> dict[str, Any]:
     checks: list[Check] = []
     if result is not None and result.is_grounded:
         checks.append(verify_mod.check_faithfulness(target, quantities, result))
-        # append dimensional,magnitude,cross-method,uncertainty here
+        checks.append(verify_mod.check_dimensional(target, quantities, result))
+        checks.append(verify_mod.check_magnitude(target, quantities, result))
 
     return {
         "checks": checks,
@@ -246,7 +247,7 @@ def decide(state: AgentState) -> dict[str, Any]:
         assumptions=state.get("assumptions", []),
     )
     checks = state.get("checks", [])
-    blocking_failed = [c for c in checks if c.blocking and c.status == "fail"]
+    blocking_failed = [c for c in checks if c.blocks]
 
     if derivation.ungrounded:
         reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)

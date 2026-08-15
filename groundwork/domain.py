@@ -68,6 +68,42 @@ SURFACE_CODE = QECParams()
 SURFACE_CODE_MAJORANA = QECParams(threshold=0.0015, crossing_prefactor=0.08)
 FLOQUET_CODE = QECParams(name="floquet_code", threshold=0.01, crossing_prefactor=0.07)
 
+@dataclass(frozen=True)
+class PlausibleBand:
+    lo: float | None
+    hi: float | None
+    expected_dimension: str
+    rationale: str
+
+
+# Bands are domain knowledge: they say what a physically sane answer looks like
+PLAUSIBLE_BANDS: dict[str, PlausibleBand] = {
+    "physical_error_rate": PlausibleBand(
+        0.0, 1.0, "dimensionless", "a probability lies in [0, 1]"),
+    "target_logical_error_rate": PlausibleBand(
+        0.0, 1.0, "dimensionless", "a probability lies in [0, 1]"),
+    "logical_error_rate": PlausibleBand(
+        0.0, 1.0, "dimensionless", "a probability lies in [0, 1]"),
+    "code_distance": PlausibleBand(
+        3, 1001, "dimensionless",
+        "surface-code distance: below 3 is uncorrectable; above ~1000 is "
+        "physically implausible (2d^2 > 2e6 physical qubits per logical qubit)"),
+    "physical_qubits": PlausibleBand(
+        1e2, 1e10, "dimensionless",
+        "RSA-scale factoring is 1e5-1e9 physical qubits (Gidney 2019 vs 2025); "
+        "1e2-1e10 is a generous sanity envelope"),
+    "runtime": PlausibleBand(
+        1e-3, 1e12, "[time]",
+        "sub-millisecond is implausibly fast for a fault-tolerant algorithm; "
+        "1e12 s (~30000 yr) is the far upper sanity bound"),
+    "logical_cycle_time": PlausibleBand(
+        1e-9, 1e-3, "[time]",
+        "surface-code logical cycle: ~1 us (Gidney); 1 ns-1 ms brackets it widely"),
+}
+
+
+def band_for(name: str) -> PlausibleBand | None:
+    return PLAUSIBLE_BANDS.get(name)
 
 def _register_domain_constants() -> None:
     register_constant("surface_code_threshold", 0.01, "", FOWLER_2012 + " — threshold ≈ 1%")
@@ -279,8 +315,9 @@ def _unpack_estimate(
 ) -> dict[str, Quantity]:
     phys = result.get("physicalCounts", {}) if hasattr(result, "get") else {}
     breakdown = phys.get("breakdown", {})
+    logical = result.get("logicalQubit", {}) if hasattr(result, "get") else {}  
     method = f"qsharp.estimate[{qubit_profile}/{qec_scheme}/budget={error_budget}]"
-    inputs = ["logical_qubits", "t_count"]   # DAG quantities only
+    inputs = ["logical_qubits", "t_count"]
 
     def q(name: str, raw: Any, unit: str = "") -> Quantity:
         if raw is None:
@@ -299,7 +336,7 @@ def _unpack_estimate(
         "runtime": q("runtime", None if runtime_ns is None else float(runtime_ns) * 1e-9, unit="s"),
         "algorithmic_logical_qubits": q("algorithmic_logical_qubits", breakdown.get("algorithmicLogicalQubits")),
         "logical_depth": q("logical_depth", breakdown.get("logicalDepth")),
-        "code_distance": q("code_distance", breakdown.get("codeDistancePerRound") or breakdown.get("codeDistance")),
+        "code_distance": q("code_distance", logical.get("codeDistance")),
         "num_t_states": q("num_t_states", breakdown.get("numTstates")),
         "num_t_factories": q("num_t_factories", breakdown.get("numTfactories")),
     }

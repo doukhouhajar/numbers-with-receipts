@@ -154,6 +154,24 @@ def faithfulness() -> Scorer:
         )
     return score
 
+@scorer(metrics=[applicable_accuracy()])
+def sanity_checks() -> Scorer:
+    async def score(state: TaskState, target: Target) -> Score:
+        a = _answer(state)
+        if a is None or a.status != "answered":
+            return Score(value=NOANSWER, explanation="no answered result to sanity-check",
+                         metadata={"applicable": False})
+        relevant = [c for c in a.checks if c.name in ("dimensional", "magnitude")]
+        if not relevant:
+            return Score(value=NOANSWER, explanation="no sanity checks ran",
+                         metadata={"applicable": False})
+        failed = [c for c in relevant if c.status == "fail"]
+        if failed:
+            return Score(value=INCORRECT, explanation="; ".join(c.detail for c in failed),
+                         metadata={"applicable": True})
+        return Score(value=CORRECT, explanation="dimensional + magnitude within bounds",
+                     metadata={"applicable": True})
+    return score
 
 @task
 def answerable() -> Task:
