@@ -40,4 +40,4 @@ async def estimate(req: EstimateRequest) -> EstimateResponse:
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"service": "Groundwork", "docs": "/docs", "health": "/health"}
+    return {"numbers-with-receipts is listing!"}

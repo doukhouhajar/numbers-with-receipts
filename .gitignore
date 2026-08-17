@@ -1,27 +1,13 @@
-# secrets / local env
 .env
-
-# python
 .venv/
 __pycache__/
 *.egg-info/
 build/
 dist/
-
-# tooling caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-
-# os
 .DS_Store
-
-# runtime output
 logs/
-
-# vendored external clone — installed via the `crossverify` extra instead of committed
 Qualtran/
-
-# local scratch runners (use demo.py / the test suite instead)
 /test.py
-tests/test_constants.py

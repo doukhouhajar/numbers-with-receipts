@@ -126,7 +126,6 @@ def run_code(code: str, timeout: int = 60) -> dict[str, Any]:
 
     raise SandboxError("code ran but never assigned a result")
 
-
 def compute_quantity(
     name: str,
     code: str,

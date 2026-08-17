@@ -10,9 +10,9 @@ dependencies = [
   # agent loop + typed spine
   "langgraph>=0.2",
   "langchain-ollama>=0.2",      # default local provider
-  "langchain-openai>=0.2",      # optional OpenAI-compatible provider (vLLM, hosted, etc.)
+  "langchain-openai>=0.2",      
   "pydantic>=2.7",
-  "pydantic-settings>=2.3",     # reads .env into typed Settings (your config.py)
+  "pydantic-settings>=2.3",     
   # grounded computation
   "pint>=0.24",                 # units / dimensional analysis
   "uncertainties>=3.2",         # error propagation
@@ -27,18 +27,17 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   # observability
-  "langfuse>=3.0",              # OTel-native; swap for weave if you prefer W&B
+  "langfuse>=3.0",           
 ]
-
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
   "ruff>=0.6",
   "mypy>=1.11",
-  "inspect-ai>=0.3",            # evals — Phase 4 onward
+  "inspect-ai>=0.3",           
 ]
 crossverify = [
-  "qualtran>=0.4",             # 2nd estimator for the cross-method check — add at Phase 5
+  "qualtran>=0.4",             
 ]
 
 [build-system]
@@ -51,11 +50,11 @@ packages = ["groundwork"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["Qualtran"]   # vendored external clone; not our code
+extend-exclude = ["Qualtran"]  
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]   # pycodestyle, pyflakes, isort, pyupgrade, bugbear
-ignore = ["E501"]   # citations, code_ref strings and prompts are intentionally long
+ignore = ["E501"]  
 
 [tool.mypy]
 python_version = "3.11"

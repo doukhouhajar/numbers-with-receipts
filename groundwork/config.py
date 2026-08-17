@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["ollama", "openai-compatible"] = "ollama"
     groundwork_model: str = "qwen3:8b"
     ollama_base_url: str = "http://localhost:11434"
-    openai_base_url: str | None = None  # http://localhost:8000/v1 for vLLM
+    openai_base_url: str | None = None  
     openai_api_key: str | None = None
     temperature: float = 0.0 # we want determinism
 

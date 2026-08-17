@@ -26,8 +26,7 @@ jobs:
 
       - name: Pytest
         run: pytest -q
-
-      # Strict typing is a work in progress — reported, not yet gating.
+        
       - name: Mypy (non-blocking)
         continue-on-error: true
         run: mypy groundwork

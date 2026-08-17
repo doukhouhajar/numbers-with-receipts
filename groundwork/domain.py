@@ -383,7 +383,6 @@ def _unpack_estimate(
 
 
 # known algorithm workloads 
-# Logical counts lifted from published papers, each with its citation. This is how the agent answers "RSA-2048" without needing to compile Shor's algorithm
 @dataclass(frozen=True)
 class Workload:
     key: str

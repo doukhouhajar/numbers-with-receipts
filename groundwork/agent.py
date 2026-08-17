@@ -340,7 +340,6 @@ def build_graph():
 
 GRAPH = build_graph()
 
-
 def run(question: str, callbacks: list[Any] | None = None) -> Answer:
     final = GRAPH.invoke(
         {"question": question},

@@ -7,7 +7,6 @@ from groundwork.tools import dimension_of
 
 log = logging.getLogger(__name__)
 
-
 def _recipes():
     from groundwork.agent import RECIPES  # agent imports us, avoid the cycle
     return RECIPES

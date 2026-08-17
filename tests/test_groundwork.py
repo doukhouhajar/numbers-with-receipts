@@ -153,7 +153,6 @@ def test_cannot_abstain_without_a_reason() -> None:
     with pytest.raises(ValidationError, match="without a reason"):
         Answer(status="abstained", derivation=_answerable())
 
-
 def test_cannot_abstain_while_attaching_a_result() -> None:
     d = _answerable()
     with pytest.raises(ValidationError, match="result was attached"):
