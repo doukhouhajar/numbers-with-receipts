@@ -9,7 +9,8 @@ license = { text = "MIT" }
 dependencies = [
   # agent loop + typed spine
   "langgraph>=0.2",
-  "langchain-ollama>=0.2",   
+  "langchain-ollama>=0.2",      # default local provider
+  "langchain-openai>=0.2",      # optional OpenAI-compatible provider (vLLM, hosted, etc.)
   "pydantic>=2.7",
   "pydantic-settings>=2.3",     # reads .env into typed Settings (your config.py)
   # grounded computation
@@ -50,9 +51,11 @@ packages = ["groundwork"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["Qualtran"]   # vendored external clone; not our code
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]   # pycodestyle, pyflakes, isort, pyupgrade, bugbear
+ignore = ["E501"]   # citations, code_ref strings and prompts are intentionally long
 
 [tool.mypy]
 python_version = "3.11"

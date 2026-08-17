@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 import math
+import queue
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -9,6 +13,38 @@ from groundwork.models import Constant, Derived, Quantity, Unknown
 from groundwork.tools import dimension_of, register_constant
 
 log = logging.getLogger(__name__)
+
+_estimator_queue: queue.Queue[tuple[Callable[[], object], Future]] = queue.Queue()
+_estimator_thread: threading.Thread | None = None
+_estimator_lock = threading.Lock()  # guards one-time worker startup only
+
+
+def _estimator_worker() -> None:
+    while True:
+        fn, future = _estimator_queue.get()
+        if future.set_running_or_notify_cancel():
+            try:
+                future.set_result(fn())
+            except Exception as exc:  # noqa: BLE001 — deliver the error to the caller
+                future.set_exception(exc)
+        _estimator_queue.task_done()
+
+
+def _ensure_worker() -> None:
+    global _estimator_thread
+    with _estimator_lock:
+        if _estimator_thread is None:
+            _estimator_thread = threading.Thread(
+                target=_estimator_worker, name="qsharp-estimator", daemon=True
+            )
+            _estimator_thread.start()
+
+
+def _run_on_estimator_thread(fn: Callable[[], object]) -> object:
+    _ensure_worker()
+    future: Future = Future()
+    _estimator_queue.put((fn, future))
+    return future.result()  # blocks; re-raises any exception from the worker
 
 
 FOWLER_2012 = (
@@ -300,11 +336,15 @@ def estimate_from_logical_counts(
     }
 
     log.info("qsharp.estimate: %s / %s / budget=%s", qubit_profile, qec_scheme, error_budget)
-    try:
+
+    def _do_estimate() -> Any:
         qsharp.init()
         qsharp.eval(program)
-        result = qsharp.estimate("Program()", params=params)
-    except Exception as exc:  # the estimator raises a variety of runtime errors
+        return qsharp.estimate("Program()", params=params)
+
+    try:
+        result = _run_on_estimator_thread(_do_estimate)
+    except Exception as exc:
         raise EstimatorError(f"resource estimation failed: {exc}") from exc
 
     return _unpack_estimate(result, qubit_profile, qec_scheme, error_budget)

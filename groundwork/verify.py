@@ -4,6 +4,7 @@ import logging
 
 from groundwork.models import Check, Derived, Quantity
 from groundwork.tools import dimension_of
+
 log = logging.getLogger(__name__)
 
 
@@ -120,7 +121,6 @@ def qualtran_physical_qubits(
         return None, f"Qualtran API mismatch: {exc}"
     
 def check_cross_method(target: str, quantities: dict[str, Quantity], result: Quantity) -> Check:
-    from groundwork import domain
 
     if target != "physical_qubits" or result.value is None:
         return Check(name="cross_method", status="na", severity="advisory",

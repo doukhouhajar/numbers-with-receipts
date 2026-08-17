@@ -1,28 +1,48 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Annotated, Any, Literal, TypedDict
-from groundwork import verify as verify_mod
+
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
+
 from groundwork import domain
-from groundwork.tools import lookup_constant
-from groundwork.tools import dimension_of
+from groundwork import verify as verify_mod
 from groundwork.models import (
     Answer,
     Assumption,
-    Constant,
+    Check,
     Derivation,
-    Derived,
     Quantity,
     Unknown,
     UserGiven,
-    Check,
 )
+from groundwork.tools import dimension_of, lookup_constant
 
 log = logging.getLogger(__name__)
 
 MAX_COMPUTE_ATTEMPTS = 2
 
+class ParsedQuery(BaseModel):
+    target: Literal["physical_qubits", "runtime", "code_distance", "logical_error_rate"]
+    physical_error_rate: float | None = None
+    target_logical_error_rate: float | None = None
+    code_distance: float | None = None
+    is_rsa: bool = False
+
+_PARSE_PROMPT = """Extract the quantum resource estimation request as JSON. No prose, no markdown.
+
+Question: {question}
+
+Return exactly this shape:
+{{"target": one of ["physical_qubits","runtime","code_distance","logical_error_rate"],
+  "physical_error_rate": number or null,
+  "target_logical_error_rate": number or null,
+  "code_distance": number or null,
+  "is_rsa": true/false}}
+
+Rules: target is what they're asking FOR. Extract only numbers explicitly stated. Use scientific notation as given (1e-3). is_rsa true only if RSA-2048 or factoring is mentioned."""
 
 def _extend(left: list[Any], right: list[Any]) -> list[Any]:
     return left + right
@@ -48,7 +68,7 @@ class AgentState(TypedDict, total=False):
 LeafKind = Literal["user_input", "workload", "constant"]
 
 # target -> (method, {input_name: how_to_ground_it})
-RECIPES: dict[str, tuple[str, dict[str, "LeafKind"]]] = {
+RECIPES: dict[str, tuple[str, dict[str, LeafKind]]] = {
     "physical_qubits": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
     "runtime": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
     "code_distance": ("required_code_distance", {
@@ -61,9 +81,32 @@ RECIPES: dict[str, tuple[str, dict[str, "LeafKind"]]] = {
     }),
 }
 # nodes
-import re
-
 def parse(state: AgentState) -> dict[str, Any]:
+    try:
+        from groundwork.config import get_model
+        raw = get_model().invoke(_PARSE_PROMPT.format(question=state["question"])).content
+        clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        p = ParsedQuery.model_validate_json(clean)
+    except Exception as exc:
+        log.info("LLM parse failed (%s) — regex fallback", type(exc).__name__)
+        return _parse_regex(state)
+
+    givens = {k: v for k, v in {
+        "physical_error_rate": p.physical_error_rate,
+        "target_logical_error_rate": p.target_logical_error_rate,
+        "code_distance": p.code_distance,
+    }.items() if v is not None}
+    unit = "s" if p.target == "runtime" else ""
+    return {
+        "target_name": p.target, "target_unit": unit,
+        "target_dimension": dimension_of(unit) or "dimensionless",
+        "givens": givens,
+        "workload": "rsa2048_gidney2025" if p.is_rsa else None,
+        "steps": [f"[llm] Parsed target: {p.target}, givens: {list(givens)}"],
+        "attempts": 0,
+    }
+
+def _parse_regex(state: AgentState) -> dict[str, Any]:
     q = state["question"].lower()
     givens: dict[str, float] = {}
 
@@ -121,7 +164,6 @@ def plan(state: AgentState) -> dict[str, Any]:
 
 
 def ground(state: AgentState) -> dict[str, Any]:
-    target = state["target_name"]
     givens = state.get("givens", {})
     leaf_kinds = state.get("leaf_kinds", {})
     quantities = dict(state["quantities"])

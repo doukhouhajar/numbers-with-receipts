@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -26,9 +25,9 @@ from inspect_ai.scorer import (
     value_to_float,
 )
 from inspect_ai.solver import Generate, Solver, TaskState, solver
-from groundwork import domain
-from groundwork.agent import RECIPES, run
-from groundwork.models import Answer, Derived
+
+from groundwork.agent import run
+from groundwork.models import Answer
 
 DATA = Path(__file__).parent / "datasets"
 
@@ -193,7 +192,9 @@ def unit_traps() -> Task:
 
 def _selftest_metric() -> None:
     from inspect_ai.scorer import SampleScore, Score
-    mk = lambda v, ok: SampleScore(score=Score(value=v, metadata={"applicable": ok}))
+
+    def mk(v, ok):
+        return SampleScore(score=Score(value=v, metadata={"applicable": ok}))
     m = applicable_accuracy()
     assert m([mk(CORRECT, True)] * 4 + [mk(NOANSWER, False)] * 2) == 1.0
     assert m([mk(CORRECT, True), mk(INCORRECT, True)]) == 0.5
