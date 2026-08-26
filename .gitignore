@@ -1,6 +1,13 @@
 .env
 .venv/
 __pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .DS_Store
-.pytest_cache
 logs/
+Qualtran/
+/test.py

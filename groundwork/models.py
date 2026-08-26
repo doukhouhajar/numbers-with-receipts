@@ -20,7 +20,6 @@ class Derived(BaseModel):
     inputs: list[str] = Field(min_length=1)  # names of quantities this depends on
     code_ref: str | None = None  # the code that produced it
 
-
 class Unknown(BaseModel):
     kind: Literal["unknown"] = "unknown"
     reason: str = Field(min_length=1)
