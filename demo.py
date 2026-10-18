@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import argparse
 import json
 import sys
-
 from groundwork.agent import run
 from groundwork.config import get_langfuse_handler, setup_logging
 from groundwork.models import Answer, Constant, Derived, Quantity, UserGiven
@@ -40,6 +38,9 @@ def fmt_value(q: Quantity) -> str:
 
 def render(answer: Answer) -> str:
     out: list[str] = ["", "QUESTION", answer.question, ""]
+    parser = answer.meta.get("parser", "?")
+    note = answer.meta.get("parse_note", "")
+    out += ["READER", f"   {parser}" + (f" {DIM}({note[:120]}){RESET}" if note else ""), ""]
 
     d = answer.derivation
     out.append("DERIVATION")
@@ -78,6 +79,7 @@ def main() -> int:
     ap.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
     ap.add_argument("--json", action="store_true", help="emit the raw Answer as JSON")
     ap.add_argument("--no-trace", action="store_true", help="skip Langfuse tracing")
+    ap.add_argument("--no-llm", action="store_true", help="parse with the regex reader only")
     args = ap.parse_args()
 
     setup_logging()
@@ -90,7 +92,7 @@ def main() -> int:
         else:
             print(f"{DIM}(Langfuse not configured, running untraced){RESET}", file=sys.stderr)
 
-    answer = run(args.question, callbacks=callbacks)
+    answer = run(args.question, callbacks=callbacks, use_llm=not args.no_llm)
 
     if args.json:
         print(json.dumps(answer.model_dump(mode="json"), indent=2))

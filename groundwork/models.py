@@ -1,9 +1,6 @@
 from __future__ import annotations
-
-from typing import Annotated, Literal
-
+from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, model_validator
-
 
 class UserGiven(BaseModel):
     kind: Literal["given"] = "given"
@@ -119,6 +116,8 @@ class Answer(BaseModel):
     checks: list[Check] = Field(default_factory=list)   # <-- new
     abstain_reason: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    # how the answer was produced 
+    meta: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _status_is_coherent(self) -> Answer:

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypedDict
-
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
-
 from groundwork import domain
 from groundwork import verify as verify_mod
 from groundwork.models import (
@@ -64,6 +64,9 @@ class AgentState(TypedDict, total=False):
     workload: str | None
     leaf_kinds: dict[str, str]
     checks: list[Check]
+    parser: str  # "llm","regex","regex-fallback"
+    parse_note: str  # why the LLM path was not used
+    llm_reply: str  # the raw text the LLM returned for the parse prompt
 
 LeafKind = Literal["user_input", "workload", "constant"]
 
@@ -81,15 +84,25 @@ RECIPES: dict[str, tuple[str, dict[str, LeafKind]]] = {
     }),
 }
 # nodes
-def parse(state: AgentState) -> dict[str, Any]:
+def parse(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    conf = (config or {}).get("configurable", {})
+    if not conf.get("use_llm", True):
+        return {**_parse_regex(state), "parser": "regex", "parse_note": "regex-only run", "llm_reply": ""}
+
+    raw = ""
     try:
-        from groundwork.config import get_model
-        raw = get_model().invoke(_PARSE_PROMPT.format(question=state["question"])).content
+        llm = conf.get("llm")
+        if llm is None:
+            from groundwork.config import default_llm
+            llm = default_llm()
+        raw = llm(_PARSE_PROMPT.format(question=state["question"]))
         clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         p = ParsedQuery.model_validate_json(clean)
     except Exception as exc:
-        log.info("LLM parse failed (%s) — regex fallback", type(exc).__name__)
-        return _parse_regex(state)
+        note = f"{type(exc).__name__}: {str(exc)[:300]}"
+        log.warning("LLM parse failed (%s) — regex fallback", note)
+        return {**_parse_regex(state), "parser": "regex-fallback", "parse_note": note,
+                "llm_reply": raw[:2000]}
 
     givens = {k: v for k, v in {
         "physical_error_rate": p.physical_error_rate,
@@ -104,6 +117,7 @@ def parse(state: AgentState) -> dict[str, Any]:
         "workload": "rsa2048_gidney2025" if p.is_rsa else None,
         "steps": [f"[llm] Parsed target: {p.target}, givens: {list(givens)}"],
         "attempts": 0,
+        "parser": "llm", "parse_note": "", "llm_reply": raw[:2000],
     }
 
 def _parse_regex(state: AgentState) -> dict[str, Any]:
@@ -290,19 +304,20 @@ def decide(state: AgentState) -> dict[str, Any]:
     )
     checks = state.get("checks", [])
     blocking_failed = [c for c in checks if c.blocks]
+    meta = {k: state.get(k, "") for k in ("parser", "parse_note", "llm_reply")}
 
     if derivation.ungrounded:
         reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)
         answer = Answer(status="abstained", question=state["question"], derivation=derivation,
-                        checks=checks, abstain_reason=f"Cannot answer without: {reasons}")
+                        checks=checks, abstain_reason=f"Cannot answer without: {reasons}", meta=meta)
     elif blocking_failed:
         why = "; ".join(f"{c.name}: {c.detail}" for c in blocking_failed)
         answer = Answer(status="abstained", question=state["question"], derivation=derivation,
-                        checks=checks, abstain_reason=f"Verification failed — {why}")
+                        checks=checks, abstain_reason=f"Verification failed — {why}", meta=meta)
     else:
         answer = Answer(status="answered", question=state["question"],
                         result=derivation.quantities[target], derivation=derivation,
-                        checks=checks, confidence=0.8)
+                        checks=checks, confidence=0.8, meta=meta)
     return {"answer": answer}
 
 
@@ -340,9 +355,14 @@ def build_graph():
 
 GRAPH = build_graph()
 
-def run(question: str, callbacks: list[Any] | None = None) -> Answer:
+def run(
+    question: str,
+    callbacks: list[Any] | None = None,
+    llm: Callable[[str], str] | None = None,
+    use_llm: bool = True,
+) -> Answer:
     final = GRAPH.invoke(
         {"question": question},
-        config={"callbacks": callbacks or []},
+        config={"callbacks": callbacks or [], "configurable": {"llm": llm, "use_llm": use_llm}},
     )
     return final["answer"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Literal
 
@@ -13,11 +14,13 @@ class Settings(BaseSettings):
     )
 
     # LLM
-    llm_provider: Literal["ollama", "openai-compatible"] = "ollama"
-    groundwork_model: str = "qwen3:8b"
+    llm_provider: Literal["ollama", "openai-compatible", "openrouter"] = "ollama"
+    groundwork_model: str = "llama3.1:8b"
     ollama_base_url: str = "http://localhost:11434"
-    openai_base_url: str | None = None  
+    openai_base_url: str | None = None
     openai_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     temperature: float = 0.0 # we want determinism
 
     # Sandbox 
@@ -57,8 +60,32 @@ def get_model(settings: Settings | None = None):
             api_key=s.openai_api_key or "local", # for keyless local servers
             temperature=s.temperature,
         )
+    if s.llm_provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        if not s.openrouter_api_key:
+            raise ValueError("LLM_PROVIDER=openrouter but OPENROUTER_API_KEY is not set")
+        return ChatOpenAI(
+            model=s.groundwork_model,  # meta-llama/llama-3.3-70b-instruct
+            base_url=s.openrouter_base_url,
+            api_key=s.openrouter_api_key,
+            temperature=s.temperature,
+            timeout=60,
+            max_retries=2,
+        )
     raise ValueError(f"Unknown LLM_PROVIDER: {s.llm_provider!r}")
 
+
+# agent only needs "prompt in, text out"
+LLM = Callable[[str], str]
+def default_llm(settings: Settings | None = None) -> LLM:
+    model = get_model(settings)
+
+    def complete(prompt: str) -> str:
+        content = model.invoke(prompt).content
+        return content if isinstance(content, str) else str(content)
+
+    return complete
 
 def get_langfuse_handler(settings: Settings | None = None):
     s = settings or get_settings()
