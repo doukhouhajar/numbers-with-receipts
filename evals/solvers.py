@@ -16,7 +16,6 @@ from inspect_ai.solver import (
 
 from groundwork.agent import run
 
-
 @solver
 def groundwork_agent(use_llm: bool = True, reader: Callable[[TaskState], Callable[[str], str]] | None = None) -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
@@ -31,7 +30,7 @@ def groundwork_agent(use_llm: bool = True, reader: Callable[[TaskState], Callabl
         try:
             answer = await asyncio.to_thread(run, state.input_text, llm=fn, use_llm=use_llm)
             completion = answer.model_dump_json()
-        except Exception as exc:  #crash scored as "error"
+        except Exception as exc:  # a crash is a finding, scored as "error"
             completion = json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
         state.output = ModelOutput.from_content("groundwork", completion)
         return state
@@ -39,6 +38,7 @@ def groundwork_agent(use_llm: bool = True, reader: Callable[[TaskState], Callabl
     return solve
 
 
+# model alone 
 CONVENTION = (
     "You answer quantitative questions about fault-tolerant quantum computing.\n"
     "For surface-code questions use this convention: the logical error rate is "
@@ -67,7 +67,7 @@ def bare(abstain_instruction: bool = False) -> Solver:
     )
 
 
-# solvers that test the eval
+# test the eval 
 @solver
 def dummy(kind: str = "oracle") -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
