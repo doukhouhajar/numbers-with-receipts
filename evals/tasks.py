@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path
+
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.model import GenerateConfig
@@ -62,6 +64,8 @@ MUTATION_FAMILIES = ("F1", "F2", "F6")
 
 def truth_reply(md: dict, mutant: str) -> str:
     t = dict(md["truth"])
+    if t.get("is_rsa"):  # v2 parser names algorithm + key size
+        t.update(algorithm="rsa", key_bits=2048)
     if mutant == "M7_reader_swaps_inputs" and t.get("physical_error_rate") is not None:
         other = "target_logical_error_rate" if t.get("target_logical_error_rate") is not None else "code_distance"
         t["physical_error_rate"], t[other] = t[other], t["physical_error_rate"]

@@ -4,9 +4,11 @@ import logging
 import re
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, TypedDict
+
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
+
 from groundwork import domain
 from groundwork import verify as verify_mod
 from groundwork.models import (
@@ -24,25 +26,44 @@ log = logging.getLogger(__name__)
 
 MAX_COMPUTE_ATTEMPTS = 2
 
+
 class ParsedQuery(BaseModel):
-    target: Literal["physical_qubits", "runtime", "code_distance", "logical_error_rate"]
+    target: Literal["physical_qubits", "runtime", "code_distance", "logical_error_rate", "other"]
     physical_error_rate: float | None = None
     target_logical_error_rate: float | None = None
     code_distance: float | None = None
-    is_rsa: bool = False
+    # v1: one is_rsa flag, so RSA-4096 got RSA-2048's counts
+    algorithm: Literal["rsa", "ecc", "aes", "discrete_log", "other"] | None = None
+    key_bits: int | None = None
+    # v1 ignored named hardware
+    qubit_type: Literal["gate_ns", "gate_us", "majorana", "trapped_ion", "other"] | None = None
+    qec_scheme: Literal["surface_code", "floquet_code"] | None = None
+    error_budget: float | None = None
 
-_PARSE_PROMPT = """Extract the quantum resource estimation request as JSON. No prose, no markdown.
+
+_PARSE_PROMPT = """Extract the quantum resource estimation request as JSON. Reply with the JSON object only.
 
 Question: {question}
 
 Return exactly this shape:
-{{"target": one of ["physical_qubits","runtime","code_distance","logical_error_rate"],
+{{"target": one of ["physical_qubits","runtime","code_distance","logical_error_rate","other"],
   "physical_error_rate": number or null,
   "target_logical_error_rate": number or null,
   "code_distance": number or null,
-  "is_rsa": true/false}}
+  "algorithm": one of ["rsa","ecc","aes","discrete_log","other"] or null,
+  "key_bits": integer or null,
+  "qubit_type": one of ["gate_ns","gate_us","majorana","trapped_ion","other"] or null,
+  "qec_scheme": one of ["surface_code","floquet_code"] or null,
+  "error_budget": number or null}}
 
-Rules: target is what they're asking FOR. Extract only numbers explicitly stated. Use scientific notation as given (1e-3). is_rsa true only if RSA-2048 or factoring is mentioned."""
+Rules:
+- target is the quantity they ask FOR; use "other" if it is none of the four.
+- Copy only numbers the question states. Never estimate, never fill a gap, never use a typical value.
+- Write each number as a plain decimal or in e-notation: 0.1% -> 0.001, 10^-3 -> 0.001, "one in a thousand" -> 0.001.
+- Keep a number even if it looks invalid (negative, above 1, zero): validation happens later.
+- algorithm and key_bits only if a cryptosystem or key size is named (RSA-2048 -> "rsa", 2048).
+- qubit_type only if the hardware is named: nanosecond or superconducting gate-based -> "gate_ns", microsecond gate-based -> "gate_us", Majorana -> "majorana", trapped ions -> "trapped_ion"."""
+
 
 def _extend(left: list[Any], right: list[Any]) -> list[Any]:
     return left + right
@@ -50,30 +71,35 @@ def _extend(left: list[Any], right: list[Any]) -> list[Any]:
 
 class AgentState(TypedDict, total=False):
     question: str
-    target_name: str # what we're solving for
+    target_name: str  # what we're solving for
     target_unit: str  # expected unit of the answer
     target_dimension: str  # expected dimension
     givens: dict[str, float]  # values the user actually supplied
     quantities: dict[str, Quantity]  # the DAG under construction
     steps: Annotated[list[str], _extend]
     assumptions: Annotated[list[Assumption], _extend]
-    verification: dict[str, bool]     # check name -> passed
+    verification: dict[str, bool]  # check name -> did not block
     verification_notes: Annotated[list[str], _extend]
     attempts: int
     answer: Answer
-    workload: str | None
+    workload: str | None  # key into domain.WORKLOADS
+    workload_ask: str  # what was asked when no workload matches
+    hardware: dict[str, Any]  # machine named in the question
+    hw: dict[str, Any]  # machine the estimator runs on
+    blocked: str  # why the plan cannot run
     leaf_kinds: dict[str, str]
     checks: list[Check]
     parser: str  # "llm","regex","regex-fallback"
     parse_note: str  # why the LLM path was not used
-    llm_reply: str  # the raw text the LLM returned for the parse prompt
+    llm_reply: str  # raw LLM reply to the parse prompt
+
 
 LeafKind = Literal["user_input", "workload", "constant"]
 
 # target -> (method, {input_name: how_to_ground_it})
 RECIPES: dict[str, tuple[str, dict[str, LeafKind]]] = {
-    "physical_qubits": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
-    "runtime": ("estimator", {"logical_qubits": "workload", "t_count": "workload"}),
+    "physical_qubits": ("estimator", {"logical_qubits": "workload", "toffoli_count": "workload"}),
+    "runtime": ("estimator", {"logical_qubits": "workload", "toffoli_count": "workload"}),
     "code_distance": ("required_code_distance", {
         "physical_error_rate": "user_input",
         "target_logical_error_rate": "user_input",
@@ -83,7 +109,30 @@ RECIPES: dict[str, tuple[str, dict[str, LeafKind]]] = {
         "code_distance": "user_input",
     }),
 }
-# nodes
+
+
+# parse ─
+
+
+def _extract_json(raw: str) -> str:
+    # first balanced {...}; v1 only trimmed ``` fences
+    text = re.sub(r"<think>.*?</think>", "", raw, flags=re.S)
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in the reply")
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        depth += (ch == "{") - (ch == "}")
+        if depth == 0:
+            return text[start:i + 1]
+    raise ValueError("unbalanced JSON object in the reply")
+
+
+def _target_unit(target: str) -> tuple[str, str]:
+    unit = "s" if target == "runtime" else ""
+    return unit, dimension_of(unit) or "dimensionless"
+
+
 def parse(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     conf = (config or {}).get("configurable", {})
     if not conf.get("use_llm", True):
@@ -96,8 +145,7 @@ def parse(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             from groundwork.config import default_llm
             llm = default_llm()
         raw = llm(_PARSE_PROMPT.format(question=state["question"]))
-        clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        p = ParsedQuery.model_validate_json(clean)
+        p = ParsedQuery.model_validate_json(_extract_json(raw))
     except Exception as exc:
         note = f"{type(exc).__name__}: {str(exc)[:300]}"
         log.warning("LLM parse failed (%s) — regex fallback", note)
@@ -109,42 +157,92 @@ def parse(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         "target_logical_error_rate": p.target_logical_error_rate,
         "code_distance": p.code_distance,
     }.items() if v is not None}
-    unit = "s" if p.target == "runtime" else ""
+    workload = domain.find_workload(p.algorithm, p.key_bits) if p.algorithm else None
+    ask = f"{p.algorithm}" + (f"-{p.key_bits}" if p.key_bits else "") if p.algorithm and not workload else ""
+    unit, dim = _target_unit(p.target)
     return {
-        "target_name": p.target, "target_unit": unit,
-        "target_dimension": dimension_of(unit) or "dimensionless",
+        "target_name": p.target, "target_unit": unit, "target_dimension": dim,
         "givens": givens,
-        "workload": "rsa2048_gidney2025" if p.is_rsa else None,
+        "workload": workload, "workload_ask": ask,
+        "hardware": {"qubit_type": p.qubit_type, "qec_scheme": p.qec_scheme,
+                     "error_budget": p.error_budget},
         "steps": [f"[llm] Parsed target: {p.target}, givens: {list(givens)}"],
         "attempts": 0,
         "parser": "llm", "parse_note": "", "llm_reply": raw[:2000],
     }
 
+
+_NUM = r"(-?\d*\.?\d+(?:[eE][-+]?\d+)?)"  # v1 swallowed a final period
+_HARDWARE_WORDS = ("majorana", "floquet", "trapped", " ion", "microsecond", "nanosecond",
+                   "gate-based", "superconducting", "error budget", "µs", " ns ")
+
+
 def _parse_regex(state: AgentState) -> dict[str, Any]:
+    # reference reader, still percent-blind on purpose: read-back protects the receipts
     q = state["question"].lower()
     givens: dict[str, float] = {}
 
-    # replace with structured LLM output later
-    if m := re.search(r"physical error rate\s*(?:of\s*)?([\d.eE+-]+)", q):
+    if m := re.search(r"physical error rate\s*(?:of\s*|is\s*)?" + _NUM, q):
         givens["physical_error_rate"] = float(m.group(1))
-    if m := re.search(r"logical error rate\s*(?:of\s*)?([\d.eE+-]+)", q):
+    if m := re.search(r"logical error rate\s*(?:of\s*|at\s*)?" + _NUM, q):
         givens["target_logical_error_rate"] = float(m.group(1))
+    if m := re.search(r"distance[-\s]*(?:of\s*)?(\d+)", q):
+        givens["code_distance"] = float(m.group(1))
 
-    if "code distance" in q or "distance" in q:
-        target, unit = "code_distance", ""
+    if re.search(r"what(?: is|'s) the logical error rate", q):
+        target = "logical_error_rate"
+    elif "distance" in q:
+        target = "code_distance"
     elif "runtime" in q or "how long" in q:
-        target, unit = "runtime", "s"
+        target = "runtime"
+    elif "qubits" in q:
+        target = "physical_qubits"
     else:
-        target, unit = "physical_qubits", ""
+        target = "other"
 
+    workload, ask = None, ""
+    if re.search(r"rsa[- ]?2048|2048-bit rsa", q):
+        workload = "rsa2048_gidney2025"
+    elif any(w in q for w in ("rsa", "shor", "factor", "ecc", "aes", "grover", "logarithm")):
+        ask = "the named algorithm or key size"
+
+    unparsed = [w.strip() for w in _HARDWARE_WORDS if w in f" {q} "]
+    unit, dim = _target_unit(target)
     return {
-        "target_name": target, "target_unit": unit,
-        "target_dimension": dimension_of(unit) or "dimensionless",
+        "target_name": target, "target_unit": unit, "target_dimension": dim,
         "givens": givens,
-        "workload": "rsa2048_gidney2025" if "rsa" in q else None,
+        "workload": workload, "workload_ask": ask,
+        "hardware": {"unparsed": ", ".join(unparsed)} if unparsed else {},
         "steps": [f"Parsed target: {target}, givens: {list(givens)}"],
         "attempts": 0,
     }
+
+
+# plan
+def _resolve_hardware(state: AgentState) -> tuple[dict[str, Any], str | None]:
+    # named machine, or declared default when none is named; never a silent substitute
+    hw = state.get("hardware") or {}
+    if hw.get("unparsed"):
+        return {}, f"the question names hardware ({hw['unparsed']}) that this reader cannot map to a qubit profile"
+    qtype = hw.get("qubit_type")
+    p = (state.get("givens") or {}).get("physical_error_rate")
+    qec = hw.get("qec_scheme") or "surface_code"
+    budget = hw.get("error_budget") if hw.get("error_budget") is not None else 0.01
+    if not 0 < budget < 1:
+        return {}, f"error budget {budget:g} must lie in (0, 1)"
+    if qtype is None and p is None:
+        profile, default = domain.DEFAULT_QUBIT_PROFILE, True
+    else:
+        profile = domain.match_qubit_profile(qtype, p)
+        if profile is None:
+            known = ", ".join(sorted(domain.QUBIT_PROFILES))
+            return {}, (f"no Azure qubit profile for qubit type {qtype or 'unspecified'} at physical "
+                        f"error rate {'unspecified' if p is None else f'{p:g}'} (known: {known})")
+        default = False
+    if qec == "floquet_code" and not profile.startswith("qubit_maj"):
+        return {}, "a Floquet code needs Majorana qubits in Azure's model; name the qubit type and error rate"
+    return {"qubit_profile": profile, "qec_scheme": qec, "error_budget": budget,
+            "default_profile": default, "physical_error_rate": p}, None
 
 
 def plan(state: AgentState) -> dict[str, Any]:
@@ -166,15 +264,32 @@ def plan(state: AgentState) -> dict[str, Any]:
         name=target, unit=state["target_unit"], dimension=state["target_dimension"],
         provenance=Unknown(reason="pending computation"),
     )
-    return {
-        "quantities": quantities,
-        "leaf_kinds": dict(leaf_kinds),
-        "steps": [f"Planned: {target} <- {method}({', '.join(leaf_kinds)})"],
-        "assumptions": [
-            Assumption(text="surface code QEC", impact="floquet code changes the footprint"),
-            Assumption(text="gate-based ns qubits at 1e-3 error", impact="dominates physical qubit count"),
-        ],
-    }
+    out: dict[str, Any] = {"quantities": quantities, "leaf_kinds": dict(leaf_kinds),
+                           "steps": [f"Planned: {target} <- {method}({', '.join(leaf_kinds)})"]}
+
+    if method == "estimator":
+        hw, problem = _resolve_hardware(state)
+        if problem:
+            quantities[target] = Quantity(name=target, provenance=Unknown(reason=problem))
+            out.update(blocked=problem, steps=[f"Cannot plan {target}: {problem}"])
+            return out
+        prof = domain.QUBIT_PROFILES[hw["qubit_profile"]]
+        how = "default: the question names no hardware" if hw["default_profile"] else "as the question specifies"
+        out["hw"] = hw
+        out["assumptions"] = [
+            Assumption(text=f"Azure qubit profile {prof.name} ({prof.description}), {how}",
+                       impact="dominates the physical qubit count and runtime"),
+            Assumption(text=f"{hw['qec_scheme']}, error budget {hw['error_budget']:g}",
+                       impact="sets the code distance"),
+        ]
+    else:
+        out["assumptions"] = [Assumption(
+            text="surface code, Azure QRE convention P_L = 0.03 * (p / 0.01)^((d+1)/2)",
+            impact="another prefactor or threshold shifts the answer")]
+    return out
+
+
+# ground 
 
 
 def ground(state: AgentState) -> dict[str, Any]:
@@ -206,9 +321,11 @@ def ground(state: AgentState) -> dict[str, Any]:
                 quantities[name] = workload_counts[name]
                 notes.append(f"Grounded {name} from published workload counts")
             else:
-                quantities[name] = Quantity(name=name, provenance=Unknown(
-                    reason=f"no published workload counts for {name!r}"
-                           + (f" in {workload!r}" if workload else " (no known algorithm named)")))
+                ask = state.get("workload_ask")
+                known = ", ".join(sorted(domain.WORKLOADS))
+                why = (f"no published logical counts for {ask} (known: {known})" if ask
+                       else f"no algorithm with published counts was named (known: {known})")
+                quantities[name] = Quantity(name=name, provenance=Unknown(reason=why))
                 notes.append(f"Could not ground {name} from workloads")
 
         elif kind == "constant":
@@ -220,13 +337,16 @@ def ground(state: AgentState) -> dict[str, Any]:
     return {"quantities": quantities, "steps": notes}
 
 
+# compute ──────────────────────────────────────────────────────────────────
+
+
 def compute(state: AgentState) -> dict[str, Any]:
     target = state["target_name"]
     quantities = dict(state["quantities"])
     attempts = state.get("attempts", 0) + 1
 
     recipe = RECIPES.get(target)
-    if recipe is None:
+    if recipe is None or state.get("blocked"):
         return {"attempts": attempts}
 
     method, required = recipe
@@ -245,12 +365,13 @@ def compute(state: AgentState) -> dict[str, Any]:
     args = {n: quantities[n].value for n in required}
     try:
         if method == "estimator":
+            hw = state["hw"]
             results = domain.estimate_from_logical_counts(
                 logical_qubits=int(args["logical_qubits"]),
-                t_count=int(args["t_count"]),
-                qubit_profile="qubit_gate_ns_e3",
-                qec_scheme="surface_code",
-                error_budget=0.01,
+                toffoli_count=int(args["toffoli_count"]),
+                qubit_profile=hw["qubit_profile"],
+                qec_scheme=hw["qec_scheme"],
+                error_budget=hw["error_budget"],
             )
             # splice in every reported quantity; they're all receipted
             for name, q in results.items():
@@ -276,22 +397,32 @@ def compute(state: AgentState) -> dict[str, Any]:
         "steps": [f"Computed {target} via {method}"],
     }
 
+
+# verify 
+
+
 def verify(state: AgentState) -> dict[str, Any]:
     target = state["target_name"]
     quantities = state.get("quantities", {})
     result = quantities.get(target)
 
-    checks: list[Check] = []
+    hw_p = (state.get("hw") or {}).get("physical_error_rate")
+    checks: list[Check] = [verify_mod.check_given_fidelity(
+        state["question"], quantities, extra={"physical_error_rate (hardware)": hw_p} if hw_p is not None else None)]
     if result is not None and result.is_grounded:
         checks.append(verify_mod.check_faithfulness(target, quantities, result))
         checks.append(verify_mod.check_dimensional(target, quantities, result))
         checks.append(verify_mod.check_magnitude(target, quantities, result))
+        checks.append(verify_mod.check_cross_method(target, quantities, result))
 
     return {
         "checks": checks,
-        "verification": {c.name: (c.status != "fail") for c in checks},   # keeps routing working
+        "verification": {c.name: not c.blocks for c in checks},
         "verification_notes": [f"{c.name}: {c.status} — {c.detail}" for c in checks],
     }
+
+
+# decide 
 
 
 def decide(state: AgentState) -> dict[str, Any]:
@@ -305,15 +436,16 @@ def decide(state: AgentState) -> dict[str, Any]:
     checks = state.get("checks", [])
     blocking_failed = [c for c in checks if c.blocks]
     meta = {k: state.get(k, "") for k in ("parser", "parse_note", "llm_reply")}
+    meta["hw"] = state.get("hw", {})
 
-    if derivation.ungrounded:
-        reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)
-        answer = Answer(status="abstained", question=state["question"], derivation=derivation,
-                        checks=checks, abstain_reason=f"Cannot answer without: {reasons}", meta=meta)
-    elif blocking_failed:
+    if blocking_failed:  # a failed read-back explains the rest
         why = "; ".join(f"{c.name}: {c.detail}" for c in blocking_failed)
         answer = Answer(status="abstained", question=state["question"], derivation=derivation,
                         checks=checks, abstain_reason=f"Verification failed — {why}", meta=meta)
+    elif derivation.ungrounded:
+        reasons = "; ".join(f"{q.name}: {q.provenance.reason}" for q in derivation.ungrounded)
+        answer = Answer(status="abstained", question=state["question"], derivation=derivation,
+                        checks=checks, abstain_reason=f"Cannot answer without: {reasons}", meta=meta)
     else:
         answer = Answer(status="answered", question=state["question"],
                         result=derivation.quantities[target], derivation=derivation,
@@ -324,9 +456,10 @@ def decide(state: AgentState) -> dict[str, Any]:
 # routing
 
 def route_after_verify(state: AgentState) -> Literal["compute", "decide"]:
-    failed = [n for n, ok in state.get("verification", {}).items() if not ok]
-    if failed and state.get("attempts", 0) < MAX_COMPUTE_ATTEMPTS:
-        log.info("verification failed (%s) — retrying compute", failed)
+    # retry only when faithfulness failed; v1 retried on any failure
+    blocked = [n for n, ok in state.get("verification", {}).items() if not ok]
+    if "faithfulness" in blocked and state.get("attempts", 0) < MAX_COMPUTE_ATTEMPTS:
+        log.info("faithfulness failed — retrying compute")
         return "compute"
     return "decide"
 
@@ -354,6 +487,7 @@ def build_graph():
 
 
 GRAPH = build_graph()
+
 
 def run(
     question: str,

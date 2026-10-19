@@ -11,3 +11,4 @@ dist/
 logs/
 Qualtran/
 /test.py
+results/

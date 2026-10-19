@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import asyncio
 import json
 from collections.abc import Callable
+
 from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.solver import (
     Generate,
@@ -15,6 +17,7 @@ from inspect_ai.solver import (
 )
 
 from groundwork.agent import run
+
 
 @solver
 def groundwork_agent(use_llm: bool = True, reader: Callable[[TaskState], Callable[[str], str]] | None = None) -> Solver:

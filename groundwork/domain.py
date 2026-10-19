@@ -144,7 +144,7 @@ def band_for(name: str) -> PlausibleBand | None:
 def _register_domain_constants() -> None:
     register_constant("surface_code_threshold", 0.01, "", FOWLER_2012 + " — threshold ≈ 1%")
     register_constant("surface_code_crossing_prefactor", 0.03, "", AZURE_DOCS)
-    register_constant("rsa2048_logical_qubits_gidney2025", 1409, "", GIDNEY_2025 + ", Table 4/5")
+    register_constant("rsa2048_logical_qubits_gidney2025", 1409, "", GIDNEY_2025 + ", §3.2: 1409 logical qubits active at peak (Table 5 lists 1399)")
     register_constant("rsa2048_physical_qubits_gidney2025", 1e6, "", GIDNEY_2025 + " — under one million")
     register_constant("rsa2048_runtime_gidney2025", 5 * 24 * 3600, "s", GIDNEY_2025 + " — under one week")
     register_constant("rsa2048_physical_qubits_gidney2019", 20e6, "", GIDNEY_EKERA_2019)
@@ -293,15 +293,18 @@ class EstimatorError(RuntimeError):
     """The resource estimator could not produce an estimate"""
 
 # Q# program that reports pre-computed logical counts to the estimator
+# Toffoli = CCZ up to Hadamards -> CczCount slot (v1 used TCount: runtime ~3x too low)
 def _logical_counts_program(
-    logical_qubits: int, t_count: int, rotation_count: int = 0, rotation_depth: int = 0
+    logical_qubits: int, toffoli_count: int, t_count: int = 0,
+    rotation_count: int = 0, rotation_depth: int = 0,
 ) -> str:
     return f"""
     import Std.ResourceEstimation.*;
     operation Program() : Unit {{
         use qs = Qubit[{logical_qubits}];
         AccountForEstimates(
-            [TCount({t_count}), RotationCount({rotation_count}), RotationDepth({rotation_depth})],
+            [CczCount({toffoli_count}), TCount({t_count}),
+             RotationCount({rotation_count}), RotationDepth({rotation_depth})],
             PSSPCLayout(), qs);
     }}
     """
@@ -309,7 +312,7 @@ def _logical_counts_program(
 
 def estimate_from_logical_counts(
     logical_qubits: int,
-    t_count: int,
+    toffoli_count: int,
     qubit_profile: str = "qubit_gate_ns_e3",
     qec_scheme: str = "surface_code",
     error_budget: float = 0.01,
@@ -328,7 +331,7 @@ def estimate_from_logical_counts(
     except ImportError as exc:  # pragma: no cover
         raise EstimatorError("the `qsharp` package is not installed") from exc
 
-    program = _logical_counts_program(logical_qubits, t_count, rotation_count, rotation_depth)
+    program = _logical_counts_program(logical_qubits, toffoli_count, 0, rotation_count, rotation_depth)
     params: dict[str, Any] = {
         "qubitParams": {"name": qubit_profile},
         "qecScheme": {"name": qec_scheme},
@@ -357,7 +360,7 @@ def _unpack_estimate(
     breakdown = phys.get("breakdown", {})
     logical = result.get("logicalQubit", {}) if hasattr(result, "get") else {}  
     method = f"qsharp.estimate[{qubit_profile}/{qec_scheme}/budget={error_budget}]"
-    inputs = ["logical_qubits", "t_count"]
+    inputs = ["logical_qubits", "toffoli_count"]
 
     def q(name: str, raw: Any, unit: str = "") -> Quantity:
         if raw is None:
@@ -387,8 +390,10 @@ def _unpack_estimate(
 class Workload:
     key: str
     description: str
+    algorithm: str   # what the parser must match, together with key_bits
+    key_bits: int
     logical_qubits: int
-    t_count: int
+    toffoli_count: int
     source: str
 
 
@@ -396,9 +401,13 @@ WORKLOADS: dict[str, Workload] = {
     w.key: w
     for w in [
         Workload("rsa2048_gidney2025", "Factor RSA-2048 (approximate residue arithmetic)",
-                 1409, int(6.5e9), GIDNEY_2025 + " — 1409 logical qubits, ~6.5e9 Toffoli"),
+                 "rsa", 2048, 1409, int(6.5e9),
+                 GIDNEY_2025 + " — §3.2: 1409 logical qubits at peak; Table 5: 6.5e9 Toffolis"),
+        # v1 stored 2.7e12 (1000x typo); abstract formula gives ~2.62e9
         Workload("rsa2048_gidney2019", "Factor RSA-2048 (Ekerå–Håstad, 2019 construction)",
-                 6189, int(2.7e12), GIDNEY_EKERA_2019),
+                 "rsa", 2048, 6189, int(0.3 * 2048**3 + 0.0005 * 2048**3 * 11),
+                 GIDNEY_EKERA_2019 + " — abstract: 3n + 0.002 n lg n qubits, "
+                 "0.3 n^3 + 0.0005 n^3 lg n Toffolis, n = 2048"),
     ]
 }
 
@@ -414,8 +423,8 @@ def workload_counts(key: str) -> dict[str, Quantity]:
     return {
         "logical_qubits": Quantity(name="logical_qubits", value=float(w.logical_qubits),
                                    provenance=Constant(source=w.source)),
-        "t_count": Quantity(name="t_count", value=float(w.t_count),
-                            provenance=Constant(source=w.source)),
+        "toffoli_count": Quantity(name="toffoli_count", value=float(w.toffoli_count),
+                                  provenance=Constant(source=w.source)),
     }
 
 
@@ -427,3 +436,24 @@ CAPABILITIES: dict[str, str] = {
     "estimate_from_logical_counts": "full physical estimate via Azure QRE (estimator)",
     "workload_counts": "published logical counts for a named algorithm (constant)",
 }
+
+def find_workload(algorithm: str | None, key_bits: int | None) -> str | None:
+    for w in WORKLOADS.values():
+        if w.algorithm == algorithm and w.key_bits == key_bits and w.key.endswith("gidney2025"):
+            return w.key
+    return None
+
+
+def match_qubit_profile(qubit_type: str | None, physical_error_rate: float | None) -> str | None:
+    family = {"gate_ns": ("GateBased", 50), "gate_us": ("GateBased", 1_000),
+              "majorana": ("Majorana", 100)}.get(qubit_type or "")
+    if family is None or physical_error_rate is None:
+        return None
+    for p in QUBIT_PROFILES.values():
+        if (p.instruction_set, p.operation_time_ns) == family and math.isclose(
+                p.gate_error, physical_error_rate, rel_tol=1e-9):
+            return p.name
+    return None
+
+
+DEFAULT_QUBIT_PROFILE = "qubit_gate_ns_e3"

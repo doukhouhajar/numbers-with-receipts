@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 
 from groundwork.models import Check, Derived, Quantity
 from groundwork.tools import dimension_of
@@ -46,7 +48,8 @@ def check_faithfulness(target: str, quantities: dict[str, Quantity], result: Qua
     recomputed, detail = reexecute(target, quantities)
     if recomputed is None:
         return Check(name="faithfulness", status="na", detail=detail)
-    ok = abs(recomputed - result.value) <= 1e-9 * max(1.0, abs(result.value))
+    # relative: v1 was absolute 1e-9 below 1, so 3e-14 "matched" 3e-15
+    ok = math.isclose(recomputed, result.value, rel_tol=1e-9, abs_tol=0.0)
     return Check(
         name="faithfulness",
         status="pass" if ok else "fail",
@@ -127,9 +130,9 @@ def check_cross_method(target: str, quantities: dict[str, Quantity], result: Qua
 
     n_logical = quantities.get("logical_qubits")
     d = quantities.get("code_distance")      # Azure reports this in its breakdown
-    toff = quantities.get("t_count")         # workload's Toffoli count
+    toff = quantities.get("toffoli_count")   # workload's Toffoli count
     missing = [n for n, q in
-               (("logical_qubits", n_logical), ("code_distance", d), ("t_count", toff))
+               (("logical_qubits", n_logical), ("code_distance", d), ("toffoli_count", toff))
                if q is None or not q.is_grounded]
     if missing:
         return Check(name="cross_method", status="na", severity="advisory",
@@ -152,3 +155,69 @@ def check_cross_method(target: str, quantities: dict[str, Quantity], result: Qua
                 f"Note: Qualtran whole-algorithm error exceeds target at this d — "
                 f"qubit counts comparable, sizing is a lower bound."),
     )
+
+# read-back: every "given by user" number must appear in the question
+# (own number reader, independent of the parser it audits)
+
+_SUP = str.maketrans("⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹", "-+0123456789")
+_WORDS = {
+    "one in a thousand": 1e-3, "one in ten thousand": 1e-4, "one in a hundred thousand": 1e-5,
+    "one in a million": 1e-6, "one in a billion": 1e-9, "one in a trillion": 1e-12,
+}
+_NUMBER = re.compile(
+    r"(?P<mant>(?:(?<![\w.])-)?\d[\d,]*(?:\.\d+)?|(?<![\w.])-?\.\d+)"
+    r"(?:\s*[x×*]\s*10\s*\^\s*\(?(?P<exp1>[-+]?\d+)\)?|[eE](?P<exp2>[-+]?\d+))?"
+    r"(?P<suffix>\s*(?:%|‰|percent\b|per\s*cent\b))?"
+)
+_POWER = re.compile(r"(?<![\d.])10\s*\^\s*\(?(?P<exp>[-+]?\d+)\)?(?P<suffix>\s*%)?")
+
+
+def numbers_in(text: str) -> list[float]:
+    s = re.sub(r"([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)", lambda m: "^" + m.group(1).translate(_SUP), text)
+    s = s.replace("−", "-")
+    found: list[float] = []
+    for phrase, value in _WORDS.items():
+        if phrase in s.lower():
+            found.append(value)
+    taken: list[tuple[int, int]] = []
+    for m in _POWER.finditer(s):
+        if m.start() > 0 and s[m.start() - 1] in "x×*" or re.search(r"\d\s*[x×*]\s*$", s[:m.start()]):
+            continue  # mantissa × 10^k is handled below
+        v = 10.0 ** int(m.group("exp"))
+        found.append(v / 100 if m.group("suffix") else v)
+        taken.append(m.span())
+    for m in _NUMBER.finditer(s):
+        if any(a <= m.start() < b for a, b in taken):
+            continue
+        v = float(m.group("mant").replace(",", ""))
+        exp = m.group("exp1") or m.group("exp2")
+        if exp:
+            v *= 10.0 ** int(exp)
+        suffix = (m.group("suffix") or "").strip()
+        if suffix:
+            v /= 1000 if suffix == "‰" else 100
+        found.append(v)
+    return found
+
+
+def check_given_fidelity(question: str, quantities: dict[str, Quantity],
+                         extra: dict[str, float] | None = None) -> Check:
+    # extra: user values that pick the hardware profile
+    given = {n: q.value for n, q in quantities.items()
+             if q.provenance.kind == "given" and q.value is not None}
+    given.update({k: v for k, v in (extra or {}).items() if v is not None})
+    if not given:
+        return Check(name="given_fidelity", status="na", severity="blocking", detail="no user-given values")
+    written = numbers_in(question)
+    unread = {n: v for n, v in given.items()
+              if not any(math.isclose(v, w, rel_tol=1e-9, abs_tol=0.0) for w in written)}
+    if unread:
+        said = ", ".join(f"{w:g}" for w in written) or "none"
+        return Check(
+            name="given_fidelity", status="fail", severity="blocking",
+            detail=("recorded as given by the user but not written in the question: "
+                    + ", ".join(f"{n}={v:g}" for n, v in unread.items())
+                    + f" (numbers in the question: {said})"))
+    return Check(name="given_fidelity", status="pass", severity="blocking",
+                 detail="every user-given value appears in the question: "
+                        + ", ".join(f"{n}={v:g}" for n, v in given.items()))
